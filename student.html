@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Thi cử - Thí sinh</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; background: #f5f5f5; }
+    h1 { color: #333; }
+    .controls { margin: 20px 0; padding: 15px; background: #fff; border: 1px solid #ddd; border-radius: 4px; }
+    button { padding: 10px 20px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
+    button:hover { background: #45a049; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+    input[type="text"] { padding: 8px; width: 300px; border: 1px solid #ddd; border-radius: 4px; margin: 10px 0; display: block; }
+    .copy-text { padding: 10px; background: #e8f5e9; border: 1px dashed #4CAF50; margin: 10px 0; user-select: text; }
+    .status { padding: 8px; margin: 5px 0; border-radius: 4px; font-size: 13px; }
+    .status.connected { background: #e8f5e9; color: #2e7d32; }
+    .status.disconnected { background: #ffebee; color: #c62828; }
+    .status.info { background: #e3f2fd; color: #1565c0; }
+    #log { margin-top: 15px; padding: 10px; background: #263238; color: #aed581; font-family: monospace; font-size: 12px; max-height: 200px; overflow-y: auto; border-radius: 4px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>📝 Trang Thi Cử - Thí sinh</h1>
+
+  <div class="controls">
+    <div id="wsStatus" class="status disconnected">WebSocket: Đang kết nối...</div>
+    <button id="btnShare" onclick="startScreenShare()">📺 Start Screen Share</button>
+    <div id="shareStatus" class="status info" style="display:none;"></div>
+    <div id="resharePanel" style="display:none; margin-top:10px; padding:15px; background:#ffebee; border:2px solid #c62828; border-radius:6px; text-align:center;">
+      <div id="reshareWarning" style="color:#c62828; font-weight:bold; font-size:15px; margin-bottom:10px;"></div>
+      <button id="btnReshare" onclick="startScreenShare()" style="background:#c62828; color:white; padding:12px 24px; font-size:16px; border:none; border-radius:6px; cursor:pointer;">🔄 Share lại toàn bộ màn hình</button>
+    </div>
+  </div>
+
+  <div class="controls">
+    <h3>🔍 Test Blur (click ra ngoài ô input):</h3>
+    <input type="text" id="testInput" placeholder="Click vào đây rồi click ra ngoài trang...">
+  </div>
+
+  <div class="controls">
+    <h3>📋 Test Copy (bôi đen và Ctrl+C):</h3>
+    <p class="copy-text">Đây là nội dung thử nghiệm. Hãy bôi đen đoạn văn bản này và nhấn Ctrl+C để kích hoạt sự kiện COPY. Hệ thống sẽ chụp 5 ảnh trong 10 giây tiếp theo. chatgpt zalo gemini messenger test keywords.</p>
+  </div>
+
+  <div id="log"></div>
+
+  <video id="video" autoplay style="display:none;"></video>
+  <canvas id="canvas" style="display:none;"></canvas>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const logEl = document.getElementById('log');
+    let ws = null;
+    let screenStream = null;
+
+    // ── Logging ──
+    function log(msg) {
+      const time = new Date().toLocaleTimeString('vi-VN');
+      logEl.textContent += `[${time}] ${msg}\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    // ── WebSocket ──
+    function connectWS() {
+      ws = new WebSocket('ws://localhost:8080?role=student');
+
+      ws.onopen = () => {
+        document.getElementById('wsStatus').className = 'status connected';
+        document.getElementById('wsStatus').textContent = 'WebSocket: Đã kết nối ✓';
+        log('WebSocket connected');
+      };
+
+      ws.onclose = () => {
+        document.getElementById('wsStatus').className = 'status disconnected';
+        document.getElementById('wsStatus').textContent = 'WebSocket: Mất kết nối ✗';
+        log('WebSocket disconnected. Reconnecting in 3s...');
+        setTimeout(connectWS, 3000);
+      };
+
+      ws.onerror = () => log('WebSocket error');
+    }
+
+    connectWS();
+
+    // ── Screen Share ──
+    let shareStopSent = false;
+    let reshareTimer = null;
+    let trackPollInterval = null;
+
+    function handleShareStopped() {
+      if (shareStopSent) return;
+      shareStopSent = true;
+      // Clear polling
+      if (trackPollInterval) { clearInterval(trackPollInterval); trackPollInterval = null; }
+      // Reset UI
+      document.getElementById('btnShare').disabled = false;
+      document.getElementById('btnShare').textContent = '📺 Start Screen Share';
+      document.getElementById('shareStatus').style.display = 'none';
+      if (screenStream) {
+        screenStream.getTracks().forEach(t => t.stop());
+        screenStream = null;
+      }
+      video.srcObject = null;
+      sendEvent({ event_type: 'SCREEN_SHARE_STOPPED' });
+      log('⚠️ Screen share stopped — notification sent to server');
+    }
+
+    function clearReshareTimer() {
+      if (reshareTimer) {
+        clearInterval(reshareTimer);
+        reshareTimer = null;
+      }
+      document.getElementById('resharePanel').style.display = 'none';
+    }
+
+    function startReshareCountdown() {
+      let countdown = 30;
+      const panelEl = document.getElementById('resharePanel');
+      const warningEl = document.getElementById('reshareWarning');
+      const btnReshare = document.getElementById('btnReshare');
+      panelEl.style.display = 'block';
+      btnReshare.disabled = false;
+      warningEl.textContent = `⚠️ Bạn chưa chia sẻ đúng. Vui lòng chọn "Entire Screen" (Toàn bộ màn hình). Còn ${countdown}s...`;
+
+      reshareTimer = setInterval(() => {
+        countdown--;
+        warningEl.textContent = `⚠️ Bạn chưa chia sẻ đúng. Vui lòng chọn "Entire Screen" (Toàn bộ màn hình). Còn ${countdown}s...`;
+        if (countdown <= 0) {
+          clearInterval(reshareTimer);
+          reshareTimer = null;
+          warningEl.textContent = '❌ Hết thời gian! Đã gửi cảnh báo cho giám thị.';
+          btnReshare.disabled = true;
+          sendEvent({ event_type: 'SHARE_VIOLATION', reason: 'Không chia sẻ toàn bộ màn hình' });
+          log('❌ Hết 30s → gửi cảnh báo HIGH cho admin');
+        }
+      }, 1000);
+    }
+
+    async function startScreenShare() {
+      try {
+        screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const track = screenStream.getVideoTracks()[0];
+
+        // Detect what was shared — wrapped in try/catch for browser compat
+        let surface = undefined;
+        let label = '';
+        try {
+          const settings = track.getSettings();
+          surface = settings.displaySurface;
+          label = track.label || '';
+          log(`Display surface: ${surface || 'undefined'} | Label: "${label}"`);
+        } catch (e) {
+          log(`Detection error: ${e.message}`);
+        }
+
+        // Determine if entire screen
+        let isEntireScreen = true;
+        let rejectionReason = '';
+
+        if (surface) {
+          // Primary: use displaySurface API
+          if (surface !== 'monitor') {
+            isEntireScreen = false;
+            const surfaceMap = { window: 'cửa sổ', browser: 'tab trình duyệt' };
+            rejectionReason = surfaceMap[surface] || surface;
+          }
+        } else {
+          // Fallback: check track label
+          // Chrome/Edge: entire screen → "Screen 1", "Screen 2", "Entire screen"
+          // Window → app title like "Google Chrome", "Code"
+          // Tab → tab title
+          const labelLower = label.toLowerCase();
+          const isScreenLabel = /^screen\s*\d*$/i.test(label.trim())
+            || labelLower.includes('entire screen')
+            || labelLower.includes('màn hình');
+
+          if (!isScreenLabel && label.length > 0) {
+            isEntireScreen = false;
+            rejectionReason = `"${label}" (không phải toàn bộ màn hình)`;
+          }
+        }
+
+        if (!isEntireScreen) {
+          // Wrong mode → stop immediately, show reshare panel
+          track.stop();
+          screenStream = null;
+          log(`❌ Bạn đã chọn chia sẻ: ${rejectionReason}. Yêu cầu: TOÀN BỘ MÀN HÌNH.`);
+          // Start countdown if not already running
+          if (!reshareTimer) {
+            startReshareCountdown();
+          }
+          return;
+        }
+
+        // Correct share → clear any pending countdown
+        clearReshareTimer();
+
+        video.srcObject = screenStream;
+        shareStopSent = false;
+
+        document.getElementById('btnShare').disabled = true;
+        document.getElementById('btnShare').textContent = '📺 Đang chia sẻ màn hình...';
+        document.getElementById('shareStatus').style.display = 'block';
+        document.getElementById('shareStatus').textContent = '✓ Screen share active (Entire Screen)';
+
+        // Robust stop detection: event listeners + polling fallback
+        track.addEventListener('ended', handleShareStopped);
+        screenStream.addEventListener('inactive', handleShareStopped);
+
+        // Polling fallback: check track state every 1s
+        trackPollInterval = setInterval(() => {
+          if (!screenStream || track.readyState === 'ended') {
+            clearInterval(trackPollInterval);
+            trackPollInterval = null;
+            handleShareStopped();
+          }
+        }, 1000);
+
+        log('✅ Screen share started (Entire Screen)');
+        sendEvent({ event_type: 'SCREEN_SHARE_STARTED' });
+      } catch (err) {
+        log('Screen share denied: ' + err.message);
+      }
+    }
+
+    // ── Capture Frame ──
+    function captureFrame() {
+      if (!screenStream || !video.videoWidth) {
+        log('Warning: No screen share active, sending empty frame');
+        return '';
+      }
+
+      const scale = 1280 / video.videoWidth;
+      canvas.width = 1280;
+      canvas.height = video.videoHeight * scale;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/jpeg', 0.4);
+    }
+
+    // ── Send Event ──
+    function sendEvent(data) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(data));
+        log(`Sent: ${data.event_type}`);
+      } else {
+        log('Cannot send: WebSocket not connected');
+      }
+    }
+
+    // ── Blur Event ──
+    window.addEventListener('blur', () => {
+      if (!screenStream) return;
+      const image = captureFrame();
+      sendEvent({ event_type: 'BLUR', image });
+    });
+
+    // ── Visibility Change Event ──
+    document.addEventListener('visibilitychange', () => {
+      if (!screenStream) return;
+      if (document.hidden) {
+        const image = captureFrame();
+        sendEvent({ event_type: 'VISIBILITY_CHANGE', image });
+      }
+    });
+
+    // ── Copy Event ──
+    document.addEventListener('copy', () => {
+      if (!screenStream) return;
+      const copiedText = window.getSelection().toString();
+
+      // 1. Send COPY_DETECTED immediately
+      sendEvent({ event_type: 'COPY_DETECTED', copied_text: copiedText });
+
+      // 2. Send 5 COPY_FRAMEs every 2 seconds
+      let count = 0;
+      const interval = setInterval(() => {
+        const image = captureFrame();
+        sendEvent({ event_type: 'COPY_FRAME', image });
+        count++;
+        log(`COPY_FRAME ${count}/5 sent`);
+        if (count >= 5) {
+          clearInterval(interval);
+          log('Copy monitoring session ended');
+        }
+      }, 2000);
+    });
+  </script>
+</body>
+</html>

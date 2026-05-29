@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Giám sát thi cử - Admin</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; background: #1a1a2e; color: #eee; }
+    h1 { color: #e94560; }
+    .config-panel { padding: 15px; background: #16213e; border: 1px solid #0f3460; border-radius: 6px; margin-bottom: 20px; }
+    .config-panel label { display: block; margin: 8px 0 4px; font-weight: bold; color: #a8b2d1; }
+    select, input[type="text"] { padding: 8px; width: 350px; border: 1px solid #0f3460; border-radius: 4px; background: #0a0a1a; color: #eee; font-size: 14px; }
+    button { padding: 10px 20px; background: #e94560; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; margin-top: 10px; }
+    button:hover { background: #c73652; }
+    .status { padding: 8px; margin: 5px 0; border-radius: 4px; font-size: 13px; }
+    .status.connected { background: #1b4332; color: #95d5b2; }
+    .status.disconnected { background: #3d0000; color: #ff6b6b; }
+    #logArea { margin-top: 15px; }
+    .log-entry { padding: 12px; margin: 8px 0; border-radius: 6px; border-left: 4px solid; }
+    .log-entry.medium { background: #3d3200; border-color: #ffd700; }
+    .log-entry.high { background: #3d0000; border-color: #ff0000; }
+    .log-entry.low { background: #0a2e1a; border-color: #4CAF50; }
+    .log-entry .header { font-weight: bold; margin-bottom: 6px; }
+    .log-entry .time { color: #888; font-size: 12px; }
+    .log-entry img { max-width: 400px; margin-top: 8px; border: 1px solid #333; border-radius: 4px; cursor: pointer; }
+    .log-entry img:hover { max-width: 800px; }
+    .log-entry canvas { max-width: 400px; margin-top: 8px; border: 1px solid #333; border-radius: 4px; cursor: pointer; }
+    .log-entry canvas:hover { max-width: 800px; }
+    .log-entry.screen-share-stopped { background: #2d004d; border-color: #9b59b6; }
+    .badge.screen-share-stopped { background: #9b59b6; color: #fff; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 12px; font-weight: bold; margin-right: 6px; }
+    .badge.medium { background: #ffd700; color: #000; }
+    .badge.high { background: #ff0000; color: #fff; }
+    .badge.low { background: #4CAF50; color: #fff; }
+    .stats { display: flex; gap: 15px; margin: 15px 0; }
+    .stat-box { padding: 10px 20px; background: #16213e; border-radius: 6px; text-align: center; }
+    .stat-box .num { font-size: 24px; font-weight: bold; }
+    .stat-box .label { font-size: 12px; color: #888; }
+    /* Tabs CSS */
+    .tabs { display: flex; gap: 10px; margin: 20px 0 10px; border-bottom: 2px solid #0f3460; padding-bottom: 10px; }
+    .tab-btn { background: #16213e; color: #a8b2d1; border: 1px solid #0f3460; padding: 10px 15px; cursor: pointer; border-radius: 4px; font-weight: bold; position: relative; }
+    .tab-btn:hover { background: #1a2a4f; }
+    .tab-btn.active { background: #e94560; color: #fff; border-color: #e94560; }
+    .tab-badge { background: #ff0000; color: white; border-radius: 10px; padding: 2px 6px; font-size: 11px; position: absolute; top: -8px; right: -8px; display: none; }
+    
+    .student-status-panel { background: #0f3460; padding: 10px; border-radius: 6px; margin-top: 10px; font-size: 14px; }
+    .student-status-panel div { margin: 5px 0; }
+    .indicator { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; }
+    .indicator.on { background: #4CAF50; box-shadow: 0 0 5px #4CAF50; }
+    .indicator.off { background: #ff6b6b; box-shadow: 0 0 5px #ff6b6b; }
+  </style>
+</head>
+<body>
+  <h1>🛡️ Bảng Điều Khiển Giám Sát</h1>
+
+  <div class="config-panel">
+    <div id="wsStatus" class="status disconnected">WebSocket: Đang kết nối...</div>
+    
+    <div class="student-status-panel">
+      <div><span class="indicator off" id="connIndicator"></span>Hệ thống: <strong id="valConnected" style="color:#ff6b6b;">Chưa kết nối</strong></div>
+      <div><span class="indicator off" id="shareIndicator"></span>Màn hình: <strong id="valSharing" style="color:#ff6b6b;">Chưa chia sẻ</strong></div>
+    </div>
+
+    <label for="mode">Chế độ thi:</label>
+    <select id="mode">
+      <option value="THUC_HANH">Thực hành</option>
+      <option value="TRAC_NGHIEM">Trắc nghiệm</option>
+    </select>
+
+    <label for="blacklist">Từ khóa cấm (cách bởi dấu phẩy):</label>
+    <input type="text" id="blacklist" value="chatgpt,zalo,gemini,messenger">
+
+    <button onclick="sendConfig()">⚙️ Cập nhật cấu hình</button>
+  </div>
+
+  <div class="stats">
+    <div class="stat-box">
+      <div class="num" id="totalEvents">0</div>
+      <div class="label">Tổng sự kiện</div>
+    </div>
+    <div class="stat-box">
+      <div class="num" id="highAlerts" style="color:#ff0000;">0</div>
+      <div class="label">Mức Cao</div>
+    </div>
+    <div class="stat-box">
+      <div class="num" id="mediumAlerts" style="color:#ffd700;">0</div>
+      <div class="label">Mức Trung Bình</div>
+    </div>
+    <div class="stat-box">
+      <div class="num" id="lowAlerts" style="color:#4CAF50;">0</div>
+      <div class="label">Mức Thấp</div>
+    </div>
+  </div>
+
+  <h2>📋 Log sự kiện</h2>
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('all')">Tất cả</button>
+    <button class="tab-btn" onclick="switchTab('share')">Chia sẻ màn hình <span class="tab-badge" id="badge-share">0</span></button>
+    <button class="tab-btn" onclick="switchTab('copy')">Sao chép <span class="tab-badge" id="badge-copy">0</span></button>
+    <button class="tab-btn" onclick="switchTab('behavior')">Hành vi (Rời/Chuyển trang) <span class="tab-badge" id="badge-behavior">0</span></button>
+  </div>
+  <div id="logArea"></div>
+
+  <script>
+    const logArea = document.getElementById('logArea');
+    let ws = null;
+    let stats = { total: 0, high: 0, medium: 0, low: 0 };
+    let tabCounts = { all: 0, share: 0, copy: 0, behavior: 0 };
+    let currentTab = 'all';
+
+    function switchTab(tabId) {
+      currentTab = tabId;
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelector(`[onclick="switchTab('${tabId}')"]`).classList.add('active');
+      
+      // Reset unread count for the selected tab
+      if (tabId !== 'all') {
+        tabCounts[tabId] = 0;
+        document.getElementById('badge-' + tabId).style.display = 'none';
+      }
+      
+      const entries = document.querySelectorAll('.log-entry');
+      entries.forEach(entry => {
+        if (tabId === 'all') {
+          entry.style.display = 'block';
+        } else {
+          if (entry.classList.contains('category-' + tabId)) {
+            entry.style.display = 'block';
+          } else {
+            entry.style.display = 'none';
+          }
+        }
+      });
+    }
+
+    // ── Bảng dịch tiếng Việt ──
+    const EVENT_VI = {
+      'BLUR': 'Rời khỏi trang',
+      'VISIBILITY_CHANGE': 'Chuyển tab',
+      'COPY_DETECTED': 'Phát hiện sao chép',
+      'COPY_FRAME': 'Chụp sau sao chép',
+      'SCREEN_SHARE_STOPPED': 'Ngắt chia sẻ màn hình',
+      'SHARE_VIOLATION': 'Vi phạm chia sẻ'
+    };
+    const LEVEL_VI = { 'HIGH': 'CAO', 'MEDIUM': 'Trung Bình', 'LOW': 'Thấp' };
+    const MODE_VI = { 'THUC_HANH': 'Thực hành', 'TRAC_NGHIEM': 'Trắc nghiệm' };
+    const REASON_VI = {
+      'THEORY_MODE_ALL_HIGH': 'Vi phạm quy chế',
+      'COPY_ATTEMPT': 'Thao tác sao chép',
+      'COPY_SESSION_ALREADY_HIGH': 'Phiên sao chép đã vi phạm',
+      'NO_IMAGE_DATA': 'Không có dữ liệu ảnh',
+      'SCREEN_SHARE_DISCONNECTED': 'Đã ngắt chia sẻ màn hình',
+      'WRONG_SHARE_MODE': 'Sai chế độ chia sẻ'
+    };
+
+    function viEvent(e) { return EVENT_VI[e] || e; }
+    function viLevel(l) { return LEVEL_VI[l] || l; }
+    function viMode(m) { return MODE_VI[m] || m; }
+    function viReason(r) { return REASON_VI[r] || r; }
+
+    // ── WebSocket ──
+    function connectWS() {
+      ws = new WebSocket('ws://localhost:8080?role=admin');
+
+      ws.onopen = () => {
+        document.getElementById('wsStatus').className = 'status connected';
+        document.getElementById('wsStatus').textContent = 'WebSocket: Đã kết nối ✓';
+      };
+
+      ws.onclose = () => {
+        document.getElementById('wsStatus').className = 'status disconnected';
+        document.getElementById('wsStatus').textContent = 'WebSocket: Mất kết nối ✗';
+        setTimeout(connectWS, 3000);
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        handleEvent(data);
+      };
+    }
+
+    connectWS();
+
+    // ── Send Config ──
+    function sendConfig() {
+      const mode = document.getElementById('mode').value;
+      const blacklistRaw = document.getElementById('blacklist').value;
+      const blacklist = blacklistRaw.split(',').map(s => s.trim()).filter(Boolean);
+
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          action: 'UPDATE_CONFIG',
+          mode: mode,
+          blacklist: blacklist
+        }));
+        addLogEntry('info', `⚙️ Cấu hình đã gửi: Chế độ=${viMode(mode)}, Từ khóa cấm=[${blacklist.join(', ')}]`);
+      }
+    }
+
+    // ── Handle Incoming Events ──
+    function handleEvent(data) {
+      // Handle student status update specifically
+      if (data.event_type === 'STUDENT_STATUS') {
+        console.log('Received STUDENT_STATUS:', data.status);
+        const isConnected = data.status.connected > 0;
+        const isSharing = data.status.sharing > 0;
+        
+        const elConn = document.getElementById('valConnected');
+        elConn.textContent = isConnected ? 'Đã kết nối' : 'Chưa kết nối';
+        elConn.style.color = isConnected ? '#4CAF50' : '#ff6b6b';
+        document.getElementById('connIndicator').className = 'indicator ' + (isConnected ? 'on' : 'off');
+        
+        const elShare = document.getElementById('valSharing');
+        elShare.textContent = isSharing ? 'Đang chia sẻ' : 'Chưa chia sẻ';
+        elShare.style.color = isSharing ? '#4CAF50' : '#ff6b6b';
+        document.getElementById('shareIndicator').className = 'indicator ' + (isSharing ? 'on' : 'off');
+        return;
+      }
+
+      const alertLevel = data.alert_level;
+
+      // Determine category
+      let category = 'other';
+      if (['SCREEN_SHARE_STOPPED', 'SHARE_VIOLATION'].includes(data.event_type)) category = 'share';
+      else if (['COPY_DETECTED', 'COPY_FRAME'].includes(data.event_type)) category = 'copy';
+      else if (['BLUR', 'VISIBILITY_CHANGE'].includes(data.event_type)) category = 'behavior';
+
+      // Update stats
+      stats.total++;
+      if (alertLevel === 'HIGH') stats.high++;
+      if (alertLevel === 'MEDIUM') stats.medium++;
+      if (alertLevel === 'LOW') stats.low++;
+      document.getElementById('totalEvents').textContent = stats.total;
+      document.getElementById('highAlerts').textContent = stats.high;
+      document.getElementById('mediumAlerts').textContent = stats.medium;
+      document.getElementById('lowAlerts').textContent = stats.low;
+
+      // Update tab badges (only if not currently viewing that tab)
+      if (category !== 'other' && currentTab !== category && currentTab !== 'all') {
+        tabCounts[category]++;
+        const badge = document.getElementById('badge-' + category);
+        badge.textContent = tabCounts[category];
+        badge.style.display = 'inline-block';
+      }
+
+      const time = new Date().toLocaleTimeString('vi-VN');
+      const levelClass = alertLevel.toLowerCase();
+      const displayStyle = (currentTab === 'all' || currentTab === category) ? 'block' : 'none';
+
+      // SCREEN_SHARE_STOPPED
+      if (data.event_type === 'SCREEN_SHARE_STOPPED') {
+        const html = `
+          <div class="log-entry screen-share-stopped category-${category}" style="display:${displayStyle}">
+            <div class="header">
+              <span class="badge screen-share-stopped">⚠️ NGẮT KẾT NỐI</span>
+              <span>${viEvent('SCREEN_SHARE_STOPPED')}</span>
+              <span class="time">${time}</span>
+            </div>
+            <div>🖥️ Thí sinh đã ngắt kết nối chia sẻ màn hình!</div>
+          </div>`;
+        logArea.insertAdjacentHTML('afterbegin', html);
+        return;
+      }
+
+      // SHARE_VIOLATION
+      if (data.event_type === 'SHARE_VIOLATION') {
+        const html = `
+          <div class="log-entry high category-${category}" style="display:${displayStyle}">
+            <div class="header">
+              <span class="badge high">🚨 VI PHẠM</span>
+              <span>${viEvent('SHARE_VIOLATION')}</span>
+              <span class="time">${time}</span>
+            </div>
+            <div>🚨 Thí sinh không chia sẻ toàn bộ màn hình!</div>
+          </div>`;
+        logArea.insertAdjacentHTML('afterbegin', html);
+        return;
+      }
+
+      // COPY_DETECTED
+      if (data.event_type === 'COPY_DETECTED') {
+        const html = `
+          <div class="log-entry medium category-${category}" style="display:${displayStyle}">
+            <div class="header">
+              <span class="badge medium">${viLevel('MEDIUM')}</span>
+              <span>${viEvent('COPY_DETECTED')}</span>
+              <span class="time">${time}</span>
+            </div>
+            <div>Thí sinh sao chép văn bản: <strong>"${escapeHtml(data.copied_text || '')}"</strong> — Bắt đầu theo dõi...</div>
+          </div>`;
+        logArea.insertAdjacentHTML('afterbegin', html);
+        return;
+      }
+
+      // Các sự kiện khác: COPY_FRAME / BLUR / VISIBILITY_CHANGE
+      let reason = '';
+      if (data.matched_keyword) {
+        reason = ` | Từ khóa phát hiện: <strong>"${escapeHtml(data.matched_keyword)}"</strong>`;
+      }
+      if (data.reason) {
+        reason += ` | ${viReason(data.reason)}`;
+      }
+
+      // Generate unique ID for bounding box rendering
+      const evidenceId = 'evidence_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+
+      let imgHtml = '';
+      if (data.image && data.bboxes && data.bboxes.length > 0) {
+        imgHtml = `<canvas id="${evidenceId}" style="display:none;"></canvas>`;
+      } else if (data.image) {
+        imgHtml = `<img src="${data.image}" alt="Ảnh chứng cứ">`;
+      }
+
+      const html = `
+        <div class="log-entry ${levelClass} category-${category}" style="display:${displayStyle}">
+          <div class="header">
+            <span class="badge ${levelClass}">${viLevel(alertLevel)}</span>
+            <span>${viEvent(data.event_type)}</span>
+            <span class="time">${time}</span>
+          </div>
+          <div>Chế độ: ${viMode(data.exam_mode)}${reason}</div>
+          ${imgHtml}
+        </div>`;
+      logArea.insertAdjacentHTML('afterbegin', html);
+
+      // Draw bounding boxes on canvas if present
+      if (data.image && data.bboxes && data.bboxes.length > 0) {
+        drawBboxes(evidenceId, data.image, data.bboxes);
+      }
+    }
+
+    // ── Draw bounding boxes on canvas ──
+    function drawBboxes(canvasId, imageSrc, bboxes) {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.getElementById(canvasId);
+        if (!canvas) return;
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        canvas.style.display = 'block';
+        const ctx = canvas.getContext('2d');
+
+        // Draw the image
+        ctx.drawImage(img, 0, 0);
+
+        // Draw bounding boxes — red outline only
+        ctx.strokeStyle = '#ff0000';
+        ctx.lineWidth = 3;
+        ctx.fillStyle = 'rgba(255, 0, 0, 0.15)';
+
+        for (const bbox of bboxes) {
+          const w = bbox.x1 - bbox.x0;
+          const h = bbox.y1 - bbox.y0;
+          ctx.fillRect(bbox.x0, bbox.y0, w, h);
+          ctx.strokeRect(bbox.x0, bbox.y0, w, h);
+        }
+      };
+      img.src = imageSrc;
+    }
+
+    // ── Utility: info log (not from server) ──
+    function addLogEntry(type, message) {
+      const time = new Date().toLocaleTimeString('vi-VN');
+      const html = `
+        <div class="log-entry medium" style="border-color:#0f3460; background:#0a1628;">
+          <div class="header"><span class="time">${time}</span></div>
+          <div>${message}</div>
+        </div>`;
+      logArea.insertAdjacentHTML('afterbegin', html);
+    }
+
+    // ── XSS Protection ──
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+  </script>
+</body>
+</html>
